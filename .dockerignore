@@ -1,0 +1,22 @@
+# Ignorar la carpeta del entorno virtual
+venv/
+
+# Ignorar logs y certificados de host
+logs/
+certs/
+
+# Ignorar control de versiones y caches
+.git/
+__pycache__/
+
+# Ignorar archivos de configuración local
+*.pyc
+*.pyo
+*.pyd
+*.swp
+
+# Ignorar Docker Compose si no lo quieres en la imagen
+docker-compose.yml
+
+# Ignorar el README
+README.md

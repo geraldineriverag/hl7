@@ -1,0 +1,7 @@
+{
+  "mirth_url": "http://172.22.192.1:9000/forwarder/",
+  "use_mtls": true,
+  "client_cert": "certs/client.crt",
+  "client_key": "certs/client.key",
+  "ca_cert": ""
+}

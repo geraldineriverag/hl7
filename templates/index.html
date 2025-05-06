@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Eventos HL7</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <!-- Bootstrap CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <!-- Bootstrap Icons -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons/font/bootstrap-icons.css" rel="stylesheet">
+</head>
+<body>
+  <div class="container my-4">
+    <h2 class="mb-4">Gestión de Mensajería HL7</h2>
+
+    <!-- Tarjeta de configuración -->
+    <div class="card">
+      <div class="card-body">
+        <h5 class="card-title">Configuración</h5>
+        <form>
+          <!-- Campo Endpoint Mirth -->
+          <div class="row mb-3">
+            <label for="mirthEndpoint" class="col-sm-3 col-form-label">Endpoint Mirth</label>
+            <div class="col-sm-9">
+              <input type="text" class="form-control w-100" id="mirthEndpoint" placeholder="Escribe el endpoint Mirth">
+            </div>
+          </div>
+
+          <!-- Checkbox Usar mTLS -->
+          <div class="row mb-3">
+            <div class="col-sm-12 d-flex align-items-center">
+              <div class="form-check mb-0">
+                <input class="form-check-input" type="checkbox" id="use_mTLS">
+              </div>
+              <label for="use_mTLS" class="col-sm-2 col-form-label">Usar mTLS</label>
+            </div>
+          </div>
+
+          <!-- Campos adicionales configuración TLS -->
+          <div id="mtlsFields" style="display: none; padding-left: 25px;">
+            <div class="row mb-2">
+              <label for="clientCert" class="col-sm-2 col-form-label">Certificado</label>
+              <div class="col-sm-10">
+                <input type="text" class="form-control w-100" id="clientCert" placeholder="Escribe el certificado mTLS">
+              </div>
+            </div>
+            <div class="row mb-2">
+              <label for="clientKey" class="col-sm-2 col-form-label">Clave</label>
+              <div class="col-sm-10">
+                <input type="text" class="form-control w-100" id="clientKey" placeholder="Escribe la clave mTLS">
+              </div>
+            </div>
+          </div>
+
+          <div class="row mb-4">
+            <div class="col-sm-12 text-end">
+              <button type="submit" class="btn btn-primary">Guardar</button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Tarjeta de logs -->
+    <div class="card mt-4">
+      <div class="card-body">
+        <h5 class="card-title d-flex justify-content-between align-items-center">
+          <span>Log de mensajes</span>
+          <button class="btn btn-outline-secondary" onclick="cargarLogs()">
+            <i class="bi bi-arrow-clockwise"></i>
+          </button>
+        </h5>
+        <table class="table table-bordered text-center">
+          <thead>
+            <tr>
+              <th scope="col">Timestamp</th>
+              <th scope="col">Estado</th>
+              <th scope="col">Ver</th>
+            </tr>
+          </thead>
+          <tbody id="logsTableBody"></tbody>
+        </table>
+        <nav>
+          <ul class="pagination justify-content-center" id="paginationControls"></ul>
+        </nav>
+      </div>
+    </div>
+
+    <!-- Tarjeta de gráfico -->
+    <div class="card mt-4">
+      <div class="card-body d-flex justify-content-center">
+        <canvas id="statusChart" width="300" height="200"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal para mostrar detalles del log -->
+  <div class="modal fade" id="logDetailsModal" tabindex="-1" aria-labelledby="logDetailsModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="logDetailsModalLabel">Detalles del Log</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+        </div>
+        <div class="modal-body" id="logDetails">
+          <!-- Aquí se mostrarán los detalles del log -->
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cerrar</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bootstrap JS -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <!-- Toggle campos mTLS -->
+  <script>
+    document.getElementById('use_mTLS').addEventListener('change', function() {
+      document.getElementById('mtlsFields').style.display = this.checked ? 'block' : 'none';
+    });
+  </script>
+
+  <!-- Cargar configuración -->
+  <script>
+    function cargarConfiguracion() {
+      fetch('/api/config')
+        .then(resp => { if (!resp.ok) throw new Error('Error al cargar configuración'); return resp.json(); })
+        .then(cfg => {
+          document.getElementById('mirthEndpoint').value = cfg.mirth_url;
+          document.getElementById('use_mTLS').checked    = cfg.use_mtls;
+
+          document.getElementById('mtlsFields').style.display = cfg.use_mtls ? 'block' : 'none';
+          document.getElementById('clientCert').value = cfg.client_cert;
+          document.getElementById('clientKey').value  = cfg.client_key;
+        })
+        .catch(err => console.error(err));
+    }
+    document.addEventListener('DOMContentLoaded', cargarConfiguracion);
+  </script>
+
+  <!-- Enviar configuración -->
+  <script>
+    document.querySelector('form').addEventListener('submit', function(e) {
+      e.preventDefault();
+      const payload = {
+        mirth_url:    document.getElementById('mirthEndpoint').value,
+        use_mtls:     document.getElementById('use_mTLS').checked,
+        client_cert:  document.getElementById('clientCert').value  || '',
+        client_key:   document.getElementById('clientKey').value   || '',
+        ca_cert:      ''
+      };
+      fetch('/api/config', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(payload)
+      })
+      .then(resp => { if (!resp.ok) throw new Error('Error guardando configuración'); return resp.json(); })
+      .then(() => alert('Configuración guardada correctamente'))
+      .catch(err => { console.error(err); alert('No se pudo guardar la configuración'); });
+    });
+  </script>
+
+  <!-- Variables paginación -->
+  <script>
+    let logsData = [];
+    let currentPage = 1;
+    const rowsPerPage = 5;
+  </script>
+
+  <!-- Cargar logs -->
+  <script>
+    async function cargarLogs() {
+      try {
+        const resp = await fetch('/api/logs');
+        logsData = await resp.json();
+        currentPage = 1;
+        renderLogsTable();
+        renderPaginationControls();
+      } catch (err) {
+        console.error('Error al cargar logs:', err);
+      }
+    }
+    document.addEventListener('DOMContentLoaded', cargarLogs);
+  </script>
+
+  <!-- Renderizar tabla de logs -->
+  <script>
+    function renderLogsTable() {
+      const body = document.getElementById('logsTableBody');
+      body.innerHTML = '';
+      const start = (currentPage - 1) * rowsPerPage;
+      logsData.slice(start, start + rowsPerPage).forEach(log => {
+        const isOk = log.status === 'forwarded';
+        const color = isOk ? 'success' : 'danger';
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${log.forwarded_at ? new Date(log.forwarded_at).toLocaleString() : ''}</td>
+          <td>
+            <span class="badge bg-${color}">
+              <i class="bi ${isOk ? 'bi-check-circle' : 'bi-x-circle'}"></i>
+              ${log.status}
+            </span>
+          </td>
+          <td>
+            <button class="btn btn-info" onclick="verDetalles(${log.id})">Ver</button>
+          </td>`;
+        body.appendChild(tr);
+      });
+      cargarGraficaEstados();
+    }
+  </script>
+
+  <!-- Controles de paginación -->
+  <script>
+    function renderPaginationControls() {
+      const totalPages = Math.ceil(logsData.length / rowsPerPage);
+      const ul = document.getElementById('paginationControls');
+      ul.innerHTML = '';
+      if (currentPage > 1) {
+        const prev = document.createElement('li');
+        prev.className = 'page-item';
+        prev.innerHTML = '<a class="page-link" href="#">Anterior</a>';
+        prev.addEventListener('click', e => { e.preventDefault(); currentPage--; renderLogsTable(); renderPaginationControls(); });
+        ul.appendChild(prev);
+      }
+      for (let i = 1; i <= totalPages; i++) {
+        const li = document.createElement('li');
+        li.className = 'page-item' + (i === currentPage ? ' active' : '');
+        li.innerHTML = `<a class="page-link" href="#">${i}</a>`;
+        li.addEventListener('click', e => { e.preventDefault(); currentPage = i; renderLogsTable(); renderPaginationControls(); });
+        ul.appendChild(li);
+      }
+      if (currentPage < totalPages) {
+        const next = document.createElement('li');
+        next.className = 'page-item';
+        next.innerHTML = '<a class="page-link" href="#">Siguiente</a>';
+        next.addEventListener('click', e => { e.preventDefault(); currentPage++; renderLogsTable(); renderPaginationControls(); });
+        ul.appendChild(next);
+      }
+    }
+  </script>
+
+  <!-- Ver detalles de un log -->
+  <script>
+    async function verDetalles(id) {
+      try {
+        const resp = await fetch('/api/logs/' + id);
+        const log = await resp.json();
+        const div = document.getElementById('logDetails');
+        div.innerHTML = `
+          <p><strong>ID:</strong> ${log.id}</p>
+          <p><strong>Timestamp:</strong> ${log.forwarded_at || ''}</p>
+          <p><strong>Estado:</strong> ${log.status}</p>
+          <p><strong>Mensaje:</strong> <pre>${log.message}</pre></p>
+          <p><strong>Respuesta:</strong> <pre>${log.response_code || ''} ${log.response || ''}</pre></p>`;
+        new bootstrap.Modal(document.getElementById('logDetailsModal')).show();
+      } catch (err) {
+        console.error('Error al cargar detalles:', err);
+      }
+    }
+  </script>
+
+  <!-- Gráfico de estados -->
+  <script>
+    let statusChartInstance = null;
+    function cargarGraficaEstados() {
+      const okCount = logsData.filter(l => l.status === 'forwarded').length;
+      const errCount = logsData.filter(l => l.status === 'error').length;
+      const data = [okCount, errCount];
+      const ctx = document.getElementById('statusChart').getContext('2d');
+      if (statusChartInstance) {
+        statusChartInstance.data.datasets[0].data = data;
+        statusChartInstance.update();
+      } else {
+        statusChartInstance = new Chart(ctx, {
+          type: 'pie',
+          data: {
+            labels: ['forwarded', 'error'],
+            datasets: [{ data }]
+          },
+          options: { responsive: true, maintainAspectRatio: false }
+        });
+      }
+    }
+  </script>
+</body>
+</html>

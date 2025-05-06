@@ -1,0 +1,21 @@
+# ─ Archivos y carpetas de Python ─────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Entorno virtual
+venv/
+
+# Logs
+logs/
+*.log
+
+# Certificados o secretos
+certs/
+
+# Archivos generados
+static/
+*.sqlite3
+
+# Otros
+.DS_Store
