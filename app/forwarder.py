@@ -1,54 +1,89 @@
 import threading
-import datetime
+import socket
+from datetime import datetime
 import requests
-import json
-from .storage import get_config, update_message
 
-def write_log_to_file(log_data):
-    # Esta función se encarga de escribir en el archivo .txt
-    with open("log_file.txt", "w") as file:
-        json.dump([log_data], file, indent=4)
+from .storage import get_config, get_destination, update_message
+from .models import Protocol
 
-def enqueue_forward(msg_id: int, payload: str):
+
+def enqueue_forward(msg_id: int, payload: str, dest_id: int = None) -> None:
+    """
+    Envia de forma asíncrona el mensaje HL7 al destino configurado.
+
+    - msg_id: ID del log en la BD.
+    - payload: mensaje HL7 crudo.
+    - dest_id: opcional, si se omite usa el active_dest_id de AppConfig.
+    """
     def _task():
+        # Determinar destino: explícito o por config global
         cfg = get_config()
-        try:
-            # Ya no se necesita cert/verify: Nginx hace el mTLS
-            resp = requests.post(
-                cfg.mirth_url,
-                data=payload,
+        target = dest_id or cfg.active_dest_id
+        dest = get_destination(int(target))
+
+        if not dest:
+            update_message(
+                msg_id,
+                status='error',
+                forwarded_at=datetime.utcnow().isoformat(),
+                error_type='DestinationError',
+                error_detail=f"Destino {target} no encontrado"
             )
-            status = 'forwarded' if resp.status_code < 300 else 'error'
-            code = resp.status_code
-            text = resp.text
-        except Exception as e:
-            status = 'error'
-            code = None
-            text = str(e)
+            return
 
-        # Actualizar el mensaje con la respuesta
-        update_message(
-            msg_id,
-            status=status,
-            forwarded_at=datetime.datetime.utcnow().isoformat(),
-            response_code=code,
-            response=text
-        )
-        
-        # Crear el diccionario con la información que deseas escribir
-        log_data = {
-            "created_at": datetime.datetime.utcnow().isoformat(),
-            "forwarded_at": datetime.datetime.utcnow().isoformat(),
-            "id": msg_id,
-            "message": payload,
-            "response": text,
-            "response_code": code,
-            "status": status
-        }
+        try:
+            # HTTP/HTTPS
+            if dest.protocol in (Protocol.HTTP, Protocol.HTTPS):
+                url = f"{dest.protocol.value}://{dest.host}:{dest.port}{dest.path}"
+                cert = dest.cert_path if dest.use_tls else None
+                resp = requests.post(url, data=payload, cert=cert)
+                resp.raise_for_status()
+                status = 'ok'
+                code = resp.status_code
+                text = resp.text
 
-        # Llamar a la función para escribir el log en el archivo .txt
-        write_log_to_file(log_data)
+            # MLLP
+            elif dest.protocol == Protocol.MLLP:
+                VT = b"\x0b";
+                FS = b"\x1c";
+                CR = b"\x0d"
+                packet = VT + payload.encode('utf-8') + FS + CR
+                addr = (dest.host, dest.port)
+                with socket.create_connection(addr, timeout=10) as sock:
+                    sock.sendall(packet)
+                    data = b''
+                    while True:
+                        chunk = sock.recv(1024)
+                        if not chunk:
+                            break
+                        data += chunk
+                        if data.endswith(FS + CR):
+                            break
+                status = 'ok'
+                code = 0
+                text = data.decode('utf-8', errors='ignore')
 
-    # Ejecutar el proceso en un hilo para no bloquear el servidor
+            else:
+                raise ValueError(f"Protocolo no soportado: {dest.protocol}")
+
+            # Actualizar log con éxito
+            update_message(
+                msg_id,
+                status=status,
+                forwarded_at=datetime.utcnow().isoformat(),
+                response_code=code,
+                response=text
+            )
+
+        except Exception as exc:
+            # Actualizar log con datos de error
+            update_message(
+                msg_id,
+                status='error',
+                forwarded_at=datetime.utcnow().isoformat(),
+                error_type=type(exc).__name__,
+                error_detail=str(exc)
+            )
+
     thread = threading.Thread(target=_task, daemon=True)
     thread.start()
