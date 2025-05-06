@@ -4,7 +4,6 @@ import sqlite3
 from threading import Lock
 from datetime import datetime
 from typing import List, Optional
-
 from .models import HL7Log, AppConfig, Destination, Protocol
 
 BASE_DIR    = os.path.dirname(__file__)
@@ -139,24 +138,43 @@ def delete_destination(dest_id: int) -> None:
 # ---------------------------------------------------------------------------
 # HL7 Logs CRUD
 # ---------------------------------------------------------------------------
+def cancel_message(log_id: int):
+    """Marca un intento en 'cancelled' si aún está pendiente."""
+    with _db_lock:
+        conn = _get_conn()
+        conn.execute(
+            "UPDATE hl7_messages SET status = 'cancelled' WHERE id = ? AND status = 'pending'",
+            (log_id,)
+        )
+        conn.commit()
+        conn.close()
 
-def save_message(payload: str, dest_id: int) -> HL7Log:
+
+def save_message(
+    payload: str,
+    dest_id: int,
+    parent_log_id: int = None
+) -> HL7Log:
     created = datetime.utcnow().isoformat()
     with _db_lock:
         conn = _get_conn()
         cur = conn.cursor()
         cur.execute(
             '''INSERT INTO hl7_messages
-                  (dest_id,payload,status,created_at)
-               VALUES (?,?,?,?)''',
-            (dest_id, payload, 'pending', created)
+                  (dest_id, payload, status, created_at, parent_log_id)
+               VALUES (?, ?, ?, ?, ?)''',
+            (dest_id, payload, 'pending', created, parent_log_id)
         )
         msg_id = cur.lastrowid
         conn.commit()
         conn.close()
     return HL7Log(
-        id=msg_id, dest_id=dest_id, message=payload,
-        status='pending', created_at=created
+        id=msg_id,
+        dest_id=dest_id,
+        message=payload,
+        status='pending',
+        created_at=created,
+        parent_log_id=parent_log_id
     )
 
 
@@ -232,6 +250,36 @@ def get_message(msg_id: int) -> Optional[HL7Log]:
         error_detail=r['error_detail'] or "", http_status=r['http_status'],
         parent_log_id=r['parent_log_id']
     )
+
+def row_to_HL7Log(r: sqlite3.Row) -> HL7Log:
+    return HL7Log(
+        id            = r['id'],
+        dest_id       = r['dest_id'],
+        message       = r['payload'],
+        status        = r['status'],
+        created_at    = r['created_at'],
+        forwarded_at  = r['forwarded_at'] or "",
+        response      = r['response_text'] or "",
+        response_code = r['response_code'],
+        error_type    = r['error_type'] or "",
+        error_detail  = r['error_detail'] or "",
+        http_status   = r['http_status'],
+        parent_log_id = r['parent_log_id']
+    )
+
+def list_all_attempts(root_id: int) -> List[HL7Log]:
+    """Incluye el root (id=root_id) y todos los hijos."""
+    with _db_lock:
+        conn = _get_conn()
+        rows = conn.execute(
+            '''SELECT * FROM hl7_messages
+               WHERE id = ? OR parent_log_id = ?
+               ORDER BY created_at ASC''',
+            (root_id, root_id)
+        ).fetchall()
+        conn.close()
+    return [ row_to_HL7Log(r) for r in rows ]
+
 
 # ---------------------------------------------------------------------------
 # Config CRUD (JSON)

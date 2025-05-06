@@ -108,7 +108,7 @@
         <table class="table table-bordered text-center">
           <thead>
             <tr>
-              <th>Creado</th><th>Enviado</th><th>Estado</th><th>Ver</th>
+              <th>Creado</th><th>Enviado</th><th>Estado</th><th>Acciones</th>
             </tr>
           </thead>
           <tbody id="logsTableBody"></tbody>
@@ -135,11 +135,17 @@
           <h5 class="modal-title">Detalle del Log</h5>
           <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
         </div>
-        <div class="modal-body" id="logDetails"></div>
+        <div class="modal-body">
+          <div id="logDetails"></div>
+          <h6 class="mt-3">Historial de Intentos</h6>
+          <table class="table table-sm">
+            <thead>
+              <tr><th>ID</th><th>Creado</th><th>Estado</th><th>Acciones</th></tr>
+            </thead>
+            <tbody id="attemptsTable"></tbody>
+          </table>
+        </div>
         <div class="modal-footer">
-          <button id="btnRetry" class="btn btn-warning" style="display:none;">
-            <i class="bi bi-arrow-repeat"></i> Reintentar
-          </button>
           <button class="btn btn-secondary" data-bs-dismiss="modal">Cerrar</button>
         </div>
       </div>
@@ -149,19 +155,18 @@
   <!-- Scripts Bootstrap + Chart.js -->
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-
   <script>
   // Variables globales
   let destinations = [];
   let config = {};
   let logsData = [], currentPage = 1, rowsPerPage = 5;
   let statusChart;
+  let currentLog;
 
   // 1) CRUD Destinos
   async function cargarDestinos() {
     destinations = await fetch('/api/destinations').then(r=>r.json());
-    const tbody = document.getElementById('destTable');
-    tbody.innerHTML = destinations.map(d=>`
+    document.getElementById('destTable').innerHTML = destinations.map(d=>`
       <tr>
         <td>${d.name}</td>
         <td>${d.protocol}</td>
@@ -173,7 +178,7 @@
         </td>
       </tr>
     `).join('');
-    // también refresca el select de configuración
+    // refresca select config
     const sel = document.getElementById('activeDestSelect');
     sel.innerHTML = destinations.map(d=>`
       <option value="${d.id}">${d.name}</option>
@@ -189,18 +194,14 @@
   document.getElementById('destForm').onsubmit = async e => {
     e.preventDefault();
     const data = {
-      id:    document.getElementById('destId').value||undefined,
-      name:  document.getElementById('destName').value,
+      id: document.getElementById('destId').value||undefined,
+      name: document.getElementById('destName').value,
       protocol: document.getElementById('destProtocol').value,
-      host:  document.getElementById('destHost').value,
-      port:  +document.getElementById('destPort').value,
-      path:  document.getElementById('destPath').value,
+      host: document.getElementById('destHost').value,
+      port: +document.getElementById('destPort').value,
+      path: document.getElementById('destPath').value
     };
-    await fetch('/api/destinations',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(data)
-    });
+    await fetch('/api/destinations',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
     e.target.reset();
     cargarDestinos();
   };
@@ -215,30 +216,26 @@
     document.getElementById('use_mTLS').checked = config.use_mtls;
     document.getElementById('mtlsFields').style.display = config.use_mtls?'block':'none';
     document.getElementById('clientCert').value = config.client_cert;
-    document.getElementById('clientKey').value = config.client_key;
-    document.getElementById('caCert').value    = config.ca_cert;
+    document.getElementById('clientKey').value  = config.client_key;
+    document.getElementById('caCert').value     = config.ca_cert;
   }
 
   document.getElementById('configForm').onsubmit = async e=>{
     e.preventDefault();
     const payload = {
       active_dest_id: +document.getElementById('activeDestSelect').value,
-      use_mtls:       document.getElementById('use_mTLS').checked,
-      client_cert:    document.getElementById('clientCert').value,
-      client_key:     document.getElementById('clientKey').value,
-      ca_cert:        document.getElementById('caCert').value
+      use_mtls: document.getElementById('use_mTLS').checked,
+      client_cert: document.getElementById('clientCert').value,
+      client_key: document.getElementById('clientKey').value,
+      ca_cert: document.getElementById('caCert').value
     };
-    await fetch('/api/config',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify(payload)
-    });
+    await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     config = payload;
-    cargarDestinos(); // para reflejar el activo
+    cargarDestinos();
     alert('Configuración actualizada');
   };
 
-  // 3) Logs & retry
+  // 3) Logs & retry/cancel
   async function cargarLogs() {
     logsData = await fetch('/api/logs').then(r=>r.json());
     currentPage = 1;
@@ -251,17 +248,29 @@
     body.innerHTML = '';
     const start = (currentPage-1)*rowsPerPage;
     logsData.slice(start,start+rowsPerPage).forEach(log=>{
-      const ok = log.status==='ok';
-      const color = ok?'success':'danger';
-      const tr = document.createElement('tr');
-      tr.innerHTML=`
-        <td>${new Date(log.created_at).toLocaleString()}</td>
-        <td>${log.forwarded_at?new Date(log.forwarded_at).toLocaleString():''}</td>
-        <td><span class="badge bg-${color}">${log.status}</span></td>
-        <td><button class="btn btn-sm btn-info" onclick="verDetalles(${log.id})">
+      const color = log.status==='ok' ? 'success'
+                  : log.status==='cancelled' ? 'warning'
+                  : 'danger';
+
+      // botón retry directo en tabla
+      const retryBtn = (log.status==='error' || log.status==='cancelled')
+        ? `<button class="btn btn-sm btn-warning ms-1" onclick="retry(${log.id})">
+             <i class="bi bi-arrow-repeat"></i>
+           </button>`
+        : '';
+
+      body.innerHTML += `
+        <tr>
+          <td>${new Date(log.created_at).toLocaleString()}</td>
+          <td>${log.forwarded_at?new Date(log.forwarded_at).toLocaleString():''}</td>
+          <td><span class="badge bg-${color}">${log.status}</span></td>
+          <td>
+            <button class="btn btn-sm btn-info" onclick="verDetalles(${log.id})">
               <i class="bi bi-eye"></i>
-            </button></td>`;
-      body.appendChild(tr);
+            </button>
+            ${retryBtn}
+          </td>
+        </tr>`;
     });
     renderChart();
   }
@@ -270,63 +279,83 @@
     const total = Math.ceil(logsData.length/rowsPerPage);
     const ul = document.getElementById('paginationControls');
     ul.innerHTML = '';
-    if(currentPage>1) ul.innerHTML += `<li class="page-item">
-      <a class="page-link" href="#" onclick="currentPage--,renderLogsTable(),renderPaginationControls()">Anterior</a>
-    </li>`;
-    for(let i=1;i<=total;i++){
-      ul.innerHTML += `<li class="page-item${i===currentPage?' active':''}">
-        <a class="page-link" href="#" onclick="currentPage=${i},renderLogsTable(),renderPaginationControls()">${i}</a>
-      </li>`;
-    }
-    if(currentPage<total) ul.innerHTML += `<li class="page-item">
-      <a class="page-link" href="#" onclick="currentPage++,renderLogsTable(),renderPaginationControls()">Siguiente</a>
-    </li>`;
+    if(currentPage>1)
+      ul.innerHTML += `<li class="page-item"><a class="page-link" href="#" onclick="currentPage--,renderLogsTable(),renderPaginationControls()">Anterior</a></li>`;
+    for(let i=1;i<=total;i++)
+      ul.innerHTML += `<li class="page-item${i===currentPage?' active':''}"><a class="page-link" href="#" onclick="currentPage=${i},renderLogsTable(),renderPaginationControls()">${i}</a></li>`;
+    if(currentPage<total)
+      ul.innerHTML += `<li class="page-item"><a class="page-link" href="#" onclick="currentPage++,renderLogsTable(),renderPaginationControls()">Siguiente</a></li>`;
   }
 
-  let currentLog;
   async function verDetalles(id){
     currentLog = await fetch(`/api/logs/${id}`).then(r=>r.json());
-    const m = currentLog;
     let html = `
-      <p><strong>ID:</strong> ${m.id}</p>
-      <p><strong>Mensaje:</strong><pre>${m.message}</pre></p>
-      <p><strong>Estado:</strong> ${m.status}</p>
-      <p><strong>Respuesta:</strong><pre>${m.response_code||''} ${m.response||''}</pre></p>
+      <p><strong>ID:</strong> ${currentLog.id}</p>
+      <p><strong>Mensaje:</strong><pre>${currentLog.message}</pre></p>
+      <p><strong>Estado:</strong> ${currentLog.status}</p>
+      <p><strong>Respuesta:</strong><pre>${currentLog.response_code||''} ${currentLog.response||''}</pre></p>
     `;
-    if(m.status==='error'){
-      html += `<p><strong>Error:</strong> <pre>${m.error_type}: ${m.error_detail}</pre></p>`;
-      document.getElementById('btnRetry').style.display='inline-block';
-    } else {
-      document.getElementById('btnRetry').style.display='none';
+    if(currentLog.status==='error' || currentLog.status==='pending'){
+      html += `<p><strong>Error:</strong> ${currentLog.error_type||''} <pre>${currentLog.error_detail||''}</pre></p>`;
     }
     document.getElementById('logDetails').innerHTML = html;
+    cargarIntentos(id);
     new bootstrap.Modal(document.getElementById('logDetailsModal')).show();
   }
 
-  document.getElementById('btnRetry').onclick = async ()=>{
-    await fetch(`/api/logs/${currentLog.id}/retry`,{method:'POST'});
-    bootstrap.Modal.getInstance(document.getElementById('logDetailsModal')).hide();
-    cargarLogs();
-  };
+  async function cargarIntentos(rootId){
+    const atts = await fetch(`/api/logs/${rootId}/attempts`).then(r=>r.json());
+    const tbody = document.getElementById('attemptsTable');
+    tbody.innerHTML = atts.map(a=>{
+      let btns = '';
+      if(a.status==='pending')
+        btns = `<button class="btn btn-sm btn-danger me-1" onclick="cancel(${a.id})">Cancelar</button>`;
+      if(a.status==='error' || a.status==='cancelled')
+        btns = `<button class="btn btn-sm btn-warning" onclick="retry(${a.id})">Reintentar</button>`;
+      return `
+        <tr>
+          <td>${a.id}</td>
+          <td>${new Date(a.created_at).toLocaleString()}</td>
+          <td>${a.status}</td>
+          <td>${btns}</td>
+        </tr>
+      `;
+    }).join('');
+  }
 
-  // 4) Chart
+  async function cancel(id){
+    await fetch(`/api/logs/${id}/cancel`,{method:'POST'});
+    cargarIntentos(currentLog.id);
+    cargarLogs();
+  }
+  async function retry(id){
+    await fetch(`/api/logs/${id}/retry`,{method:'POST'});
+    cargarIntentos(currentLog.id);
+    cargarLogs();
+  }
+
   function renderChart(){
     const ok = logsData.filter(l=>l.status==='ok').length;
     const err = logsData.filter(l=>l.status==='error').length;
+    const canc= logsData.filter(l=>l.status==='cancelled').length;
     const ctx = document.getElementById('statusChart');
     if(statusChart){
-      statusChart.data.datasets[0].data = [ok,err];
+      statusChart.data.datasets[0].data = [ok,err,canc];
       statusChart.update();
     } else {
-      statusChart = new Chart(ctx,{ type:'pie',
-        data:{ labels:['OK','Error'], datasets:[{ data:[ok,err] }] },
-        options:{ responsive:true, maintainAspectRatio:false }
+      statusChart = new Chart(ctx,{
+        type:'pie',
+        data:{
+          labels:['OK','Error','Cancelado'],
+          datasets:[{data:[ok,err,canc]}]
+        },
+        options:{responsive:true,maintainAspectRatio:false}
       });
     }
   }
 
   // Arranque
-  document.addEventListener('DOMContentLoaded', ()=>{
+  document.addEventListener('DOMContentLoaded',()=>{
     cargarDestinos();
     cargarConfig();
     cargarLogs();
@@ -334,3 +363,4 @@
   </script>
 </body>
 </html>
+
